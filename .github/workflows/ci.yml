@@ -1,0 +1,22 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # dev.loams:loams 0.1.0 may not be on Maven Central yet: build it from the monorepo.
+      # Drop this step and the SDK_JAR line once the artifact is published.
+      - name: Build the SDK from source
+        run: |
+          git clone --depth 1 https://github.com/ostrium-labs/loams.git sdk-src
+          sdk-src/sdks/java/build.sh package "$RUNNER_TEMP/sdk"
+          echo "SDK_JAR=$RUNNER_TEMP/sdk/loams-0.1.0.jar" >> "$GITHUB_ENV"
+      - name: Compile the examples
+        run: ./build.sh
