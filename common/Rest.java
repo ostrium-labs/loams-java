@@ -13,10 +13,8 @@ import java.util.Map;
 /**
  * Shared helpers for the examples.
  *
- * <p>The Java SDK (dev.loams:loams 0.1.0) covers the Connect surface (instance, live, approvals,
- * ...) but has no module for the native collections / query / sql REST API yet. So the examples
- * use the SDK {@link Client} to connect and feature-detect, and call the documented native REST
- * API with the JDK's own HTTP client for collections, search and SQL.
+ * <p>These examples demonstrate the native HTTP JSON routes alongside the SDK.
+ * The SDK also provides app modules, builders, collection handles, SQL and streams.
  */
 public final class Rest {
     private static final HttpClient HTTP = HttpClient.newHttpClient();
@@ -26,7 +24,7 @@ public final class Rest {
     public final Client client;
 
     public Rest(String namespace) {
-        this.endpoint = System.getenv().getOrDefault("LOAMS_ENDPOINT", "http://127.0.0.1:18080");
+        this.endpoint = System.getenv().getOrDefault("LOAMS_ENDPOINT", "http://127.0.0.1:8080");
         this.namespace = namespace;
         this.client = Client.of(Client.builder().endpoint(endpoint).build());
     }
