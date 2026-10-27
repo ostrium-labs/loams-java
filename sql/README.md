@@ -1,6 +1,6 @@
 # sql
 
-Runs SQL against collection `kb` through `/v1/namespaces/examples-java/sql`: a plain SELECT, an aggregate, and a hybrid query with `rrf(vector_search(...), text_search(...))`.
+Runs plain and parameterized SQL through the SDK's `sql()` module, plus `rrf(vector_search(...), text_search(...))` against the SDK-seeded `articles` collection. No raw SQL HTTP request is used.
 
 ```sh
 ../build.sh run sql

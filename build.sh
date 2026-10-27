@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Compile the examples with javac only (JDK 17+, no Maven or Gradle).
 #   ./build.sh            compile into out/
-#   ./build.sh run NAME   run quickstart | sql | app
+#   ./build.sh run NAME [ARGS...]   run quickstart | sql | app
 # Classpath: SDK_JAR (dev.loams:loams) plus protobuf-java, both fetched into .lib/ from
-# Maven Central. If dev.loams:loams is not on Central yet, build it from the monorepo
-# (`sdks/java/build.sh package DIR` in ostrium-labs/loams) and set SDK_JAR=DIR/loams-0.1.2.jar.
+# Maven Central. SDK_JAR may point to a local 0.1.2 jar instead.
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p .lib out
@@ -18,7 +17,7 @@ fetch() {
 }
 fetch com/google/protobuf/protobuf-java/4.29.3/protobuf-java-4.29.3.jar
 if [ -z "${SDK_JAR:-}" ]; then
-  fetch dev/loams/loams/0.1.2/loams-0.1.2.jar || { echo "dev.loams:loams:0.1.2 is not on Maven Central yet; set SDK_JAR (see header)" >&2; exit 1; }
+  fetch dev/loams/loams/0.1.2/loams-0.1.2.jar || { echo "Could not download dev.loams:loams:0.1.2 from Maven Central; check network access or set SDK_JAR" >&2; exit 1; }
   SDK_JAR=.lib/loams-0.1.2.jar
 fi
 cp="$SDK_JAR:.lib/protobuf-java-4.29.3.jar"
@@ -30,5 +29,5 @@ if [ "${1:-}" = run ]; then
     app) main=examples.SearchServer ;;
     *) echo "unknown example $2" >&2; exit 2 ;;
   esac
-  exec java -cp "out:$cp" "$main"
+  exec java -cp "out:$cp" "$main" "${@:3}"
 fi

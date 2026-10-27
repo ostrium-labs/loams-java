@@ -2,108 +2,103 @@ package examples;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import dev.loams.Client;
+import dev.loams.Filter;
+import dev.loams.Fusion;
+import dev.loams.Search;
+import dev.loams.Values;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
-/**
- * A small HTTP search service on the JDK's built-in server. {@code GET /search?q=refund&tenant=a}
- * runs a hybrid (vector + BM25 + filter) query and returns Loams' JSON answer as is.
- */
+/** A small HTTP search service; its Loams requests use the SDK's typed app modules. */
 public final class SearchServer {
-    static final int DIM = 8;
+    private SearchServer() {}
 
     public static void main(String[] args) throws IOException {
-        var loams = new Rest("examples-java");
-        System.out.println("connected to " + loams.describe());
-        loams.ensureNamespace();
-        loams.recreateCollection("articles", DIM);
-        String[][] docs = {
-            {"refund policy for damaged items", "a"},
-            {"shipping times and carriers", "a"},
-            {"refund window is thirty days", "b"},
-            {"how to reset your password", "a"},
-            {"track an order in transit", "b"},
-        };
-        var ops = new StringBuilder();
-        for (int i = 0; i < docs.length; i++) {
-            ops.append(i == 0 ? "" : ",").append(Rest.upsert(i + 1, docs[i][0], docs[i][1], Rest.embed(docs[i][0], DIM)));
-        }
-        loams.post("/collections/articles/documents", "{\"ops\": [" + ops + "]}");
-
+        Client loams = Demo.client();
+        Demo.seed(loams, "service_articles");
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8088"));
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        server.createContext("/search", ex -> handle(loams, ex));
-        server.createContext("/healthz", ex -> reply(ex, 200, "{\"ok\":true}"));
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+        server.createContext("/search", exchange -> handle(loams, exchange));
+        server.createContext("/healthz", exchange -> reply(exchange, 200, "{\"ok\":true}"));
         server.start();
         System.out.println("listening on http://127.0.0.1:" + port + "/search?q=refund&tenant=a");
     }
 
-    static void handle(Rest loams, HttpExchange ex) throws IOException {
-        Map<String, String> params = new HashMap<>();
-        String raw = ex.getRequestURI().getRawQuery();
+    private static void handle(Client loams, HttpExchange exchange) throws IOException {
+        Map<String, String> params = new LinkedHashMap<>();
+        String raw = exchange.getRequestURI().getRawQuery();
         if (raw != null) {
             for (String kv : raw.split("&")) {
-                String[] p = kv.split("=", 2);
-                params.put(URLDecoder.decode(p[0], StandardCharsets.UTF_8),
-                        p.length > 1 ? URLDecoder.decode(p[1], StandardCharsets.UTF_8) : "");
+                String[] pair = kv.split("=", 2);
+                params.put(URLDecoder.decode(pair[0], StandardCharsets.UTF_8),
+                        pair.length > 1 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "");
             }
         }
-        String q = params.getOrDefault("q", "");
-        if (q.isBlank()) {
-            reply(ex, 400, "{\"error\":\"missing q\"}");
+        String query = params.getOrDefault("q", "");
+        if (query.isBlank()) {
+            reply(exchange, 400, "{\"error\":\"missing q\"}");
             return;
         }
-        String tenant = params.get("tenant");
-        String filter = tenant == null ? "" : "\"filter\": {\"term\": {\"tenant\": " + Rest.q(tenant) + "}},";
         try {
-            var res = loams.post("/query", """
-                {"from": "collections.articles",
-                 "retrieve": [
-                   {"vector": {"field": "embedding", "query": %s, "k": 10}},
-                   {"text": {"field": "body", "query": %s, "k": 10}}],
-                 %s
-                 "fuse": {"method": "rrf", "k": 60}, "limit": 5}
-                """.formatted(Rest.vec(Rest.embed(q, DIM)), Rest.q(q), filter));
-            reply(ex, 200, toJson(res));
-        } catch (IllegalStateException e) {
-            reply(ex, 502, "{\"error\":" + Rest.q(String.valueOf(e.getMessage())) + "}");
+            var request = Search.on("service_articles").text(query, "body")
+                    .vector("embedding", Demo.embed(query)).fuse(Fusion.rrf(60))
+                    .limit(Integer.parseInt(params.getOrDefault("limit", "5")));
+            if (params.containsKey("tenant")) request.filter(Filter.eq("tenant", params.get("tenant")));
+            var answer = loams.search().query(request);
+            List<Object> hits = new ArrayList<>();
+            for (var hit : answer.getHitsList()) {
+                hits.add(Map.of("pk", Values.idText(hit.getPk()), "score", hit.getScore(),
+                        "source", Values.toPlain(hit.getSource())));
+            }
+            reply(exchange, 200, json(Map.of("hits", hits)));
+        } catch (RuntimeException e) {
+            reply(exchange, 502, json(Map.of("error", String.valueOf(e.getMessage()))));
         }
     }
 
-    @SuppressWarnings("unchecked")
-    static String toJson(Object o) {
-        if (o instanceof Map<?, ?> m) {
-            var sb = new StringBuilder("{");
-            boolean first = true;
-            for (var e : ((Map<String, Object>) m).entrySet()) {
-                sb.append(first ? "" : ",").append(Rest.q(e.getKey())).append(':').append(toJson(e.getValue()));
-                first = false;
-            }
-            return sb.append('}').toString();
+    private static String json(Object value) {
+        if (value == null) return "null";
+        if (value instanceof String text) return quote(text);
+        if (value instanceof Number || value instanceof Boolean) return value.toString();
+        if (value instanceof Map<?, ?> map) {
+            List<String> fields = new ArrayList<>();
+            map.forEach((key, item) -> fields.add(quote(String.valueOf(key)) + ":" + json(item)));
+            return "{" + String.join(",", fields) + "}";
         }
-        if (o instanceof Iterable<?> l) {
-            var sb = new StringBuilder("[");
-            boolean first = true;
-            for (Object x : l) {
-                sb.append(first ? "" : ",").append(toJson(x));
-                first = false;
-            }
-            return sb.append(']').toString();
+        if (value instanceof Iterable<?> items) {
+            List<String> values = new ArrayList<>();
+            items.forEach(item -> values.add(json(item)));
+            return "[" + String.join(",", values) + "]";
         }
-        if (o instanceof String s) return Rest.q(s);
-        return String.valueOf(o);
+        return quote(value.toString());
     }
 
-    static void reply(HttpExchange ex, int status, String body) throws IOException {
+    private static String quote(String text) {
+        StringBuilder out = new StringBuilder("\"");
+        for (char c : text.toCharArray()) {
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> { if (c < 0x20) out.append(String.format("\\u%04x", (int) c)); else out.append(c); }
+            }
+        }
+        return out.append('"').toString();
+    }
+
+    private static void reply(HttpExchange exchange, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("content-type", "application/json");
-        ex.sendResponseHeaders(status, bytes.length);
-        try (var os = ex.getResponseBody()) {
-            os.write(bytes);
-        }
+        exchange.getResponseHeaders().set("content-type", "application/json");
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (var stream = exchange.getResponseBody()) { stream.write(bytes); }
     }
 }
