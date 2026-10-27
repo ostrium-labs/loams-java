@@ -1,46 +1,69 @@
 package examples;
 
+import dev.loams.Client;
+import dev.loams.Filter;
+import dev.loams.Fusion;
+import dev.loams.ProducerRecord;
+import dev.loams.Search;
+import dev.loams.SqlModule;
+import dev.loams.UnimplementedException;
+import dev.loams.gen.loams.collection.v1.SearchResponse;
+import dev.loams.gen.loams.live.v1.ListAppsRequest;
+import java.util.List;
 import java.util.Map;
 
-/** Connect, create a collection, upsert documents, run a hybrid search, print the hits. */
+/** SDK tour: namespace, collection, documents, text/vector/hybrid search, graph, SQL and streams. */
 public final class Quickstart {
-    static final int DIM = 8;
+    private Quickstart() {}
 
     public static void main(String[] args) {
-        var loams = new Rest("examples-java");
-        System.out.println("connected to " + loams.describe());
+        Client loams = Demo.client();
+        Demo.seed(loams, "articles");
 
-        loams.ensureNamespace();
-        loams.recreateCollection("kb", DIM);
+        SearchResponse text = loams.search().query(Search.on("articles").text("refund", "body")
+                .filter(Filter.eq("tenant", "a")).limit(3));
+        System.out.println("text search (tenant a):");
+        Demo.printHits(text);
 
-        String[][] docs = {
-            {"refund policy for damaged items", "a"},
-            {"shipping times and carriers", "a"},
-            {"refund window is thirty days", "b"},
-            {"how to reset your password", "a"},
-        };
-        var ops = new StringBuilder();
-        for (int i = 0; i < docs.length; i++) {
-            ops.append(i == 0 ? "" : ",").append(Rest.upsert(i + 1, docs[i][0], docs[i][1], Rest.embed(docs[i][0], DIM)));
+        System.out.println("vector search:");
+        Demo.printHits(loams.vector().search("articles", Demo.embed("refund policy"), "embedding", 3, null));
+
+        SearchResponse hybrid = loams.search().query(Search.on("articles")
+                .text("refund", "body").vector("embedding", Demo.embed("refund policy"))
+                .fuse(Fusion.rrf(60)).filter(Filter.eq("tenant", "a")).limit(3));
+        System.out.println("hybrid search (vector + BM25 + filter, RRF):");
+        Demo.printHits(hybrid);
+
+        try {
+            loams.graph().create("examples_graph");
+            loams.graph().query("examples_graph", "INSERT (:Article {id: $id})", Map.of("id", 1L), false);
+            var result = loams.graph().query("examples_graph", "MATCH (a:Article) RETURN a.id", null, true);
+            System.out.println("experimental graph returned " + result.getRows().getRowsCount() + " row(s)");
+        } catch (UnimplementedException unavailable) {
+            System.out.println("graph is not enabled in this engine build");
         }
-        loams.post("/collections/kb/documents", "{\"ops\": [" + ops + "]}");
-        System.out.println("upserted " + docs.length + " documents");
 
-        String query = "refund";
-        var result = loams.post("/query", """
-            {"from": "collections.kb",
-             "retrieve": [
-               {"vector": {"field": "embedding", "query": %s, "k": 10}},
-               {"text": {"field": "body", "query": %s, "k": 10}}],
-             "filter": {"term": {"tenant": "a"}},
-             "fuse": {"method": "rrf", "k": 60},
-             "limit": 3}
-            """.formatted(Rest.vec(Rest.embed(query, DIM)), Rest.q(query)));
+        var sql = loams.sql().query("SELECT tenant, count(*) AS n FROM articles GROUP BY tenant ORDER BY tenant", List.of());
+        System.out.println("SQL rows: " + SqlModule.records(sql));
 
-        System.out.println("hybrid search for \"" + query + "\" (tenant a):");
-        for (Object hit : Rest.list(result, "hits")) {
-            Map<String, Object> h = Rest.map(hit);
-            System.out.printf("  id=%d score=%.4f %s%n", ((Number) h.get("pk")).longValue(), ((Number) h.get("score")).doubleValue(), Rest.map(h.get("source")).get("body"));
+        loams.streams().create("example_events", 1);
+        var write = loams.streams().produce("example_events", 0,
+                List.of(ProducerRecord.of("article-1", Map.of("kind", "indexed", "id", 1))),
+                "java-example", 1L);
+        try (var subscription = loams.streams().subscribe("example_events", 0, write.getBaseOffset(), 1000)) {
+            if (subscription.hasNext()) {
+                var event = subscription.next();
+                System.out.println("stream event at offset " + event.offset() + ": " + event.text());
+            }
+        }
+
+        // Optional and read-only: the Live admin service needs a server that serves it and
+        // credentials with directory access. It never creates or changes an app.
+        if (List.of(args).contains("--live-admin")) {
+            var absent = loams.system().guard("live.admin");
+            if (absent != null) throw absent;
+            var apps = loams.liveAdmin().listApps(ListAppsRequest.getDefaultInstance());
+            System.out.println("Live apps visible to this credential: " + apps.getAppsCount());
         }
     }
 }
